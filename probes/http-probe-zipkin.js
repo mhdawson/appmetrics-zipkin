@@ -18,29 +18,11 @@
 var Probe = require('../lib/probe.js');
 var aspect = require('../lib/aspect.js');
 var util = require('util');
-const zipkin = require('zipkin');
+
+const cls = require('continuation-local-storage');
+const openTracing = require('opentracing');
 
 var serviceName;
-
-const {
-  Request,
-  HttpHeaders: Header,
-  option: {
-    Some,
-    None
-  },
-  Annotation,
-  TraceId
-} = require('zipkin');
-
-const CLSContext = require('zipkin-context-cls');
-const ctxImpl = new CLSContext();
-
-function hasZipkinHeader(httpReq) {
-  const headers = httpReq.headers || {};
-  return headers[(Header.TraceId).toLowerCase()] !== undefined && headers[(Header.SpanId).toLowerCase()] !== undefined;
-}
-
 
 function HttpProbeZipkin() {
   Probe.call(this, 'http');
@@ -50,34 +32,16 @@ function HttpProbeZipkin() {
 }
 util.inherits(HttpProbeZipkin, Probe);
 
-
-function stringToBoolean(str) {
-  return str === '1';
-}
-
-function stringToIntOption(str) {
-  try {
-    return new Some(parseInt(str, 10));
-  } catch (err) {
-    return None;
-  }
-}
-
 HttpProbeZipkin.prototype.attach = function(name, target) {
   serviceName = this.serviceName;
 
-  const tracer = new zipkin.Tracer({
-    ctxImpl,
-    recorder: this.recorder,
-    sampler: new zipkin.sampler.CountingSampler(this.config.sampleRate), // sample rate 0.01 will sample 1 % of all incoming requests
-    traceId128Bit: true // to generate 128-bit trace IDs.
-  });
+  const tracer = this.recorder;
 
   if (name == 'http') {
     if (target.__zipkinProbeAttached__) return target;
     target.__zipkinProbeAttached__ = true;
     var methods = ['on', 'addListener'];
-
+  
     aspect.before(target.Server.prototype, methods,
       function(obj, methodName, args, probeData) {
         if (args[0] !== 'request') return;
@@ -91,45 +55,22 @@ HttpProbeZipkin.prototype.attach = function(name, target) {
           // console.log(util.inspect(httpReq));
           if (traceUrl !== '') {
             const method = httpReq.method;
-            if (hasZipkinHeader(httpReq)) {
-              const headers = httpReq.headers;
-              var spanId = headers[(Header.SpanId).toLowerCase()];
-              if (spanId !== undefined) {
-                const traceId = new Some(headers[(Header.TraceId).toLowerCase()]);
-                const parentSpanId = new Some(headers[(Header.ParentSpanId).toLowerCase()]);
-                const sampled = new Some(headers[(Header.Sampled).toLowerCase()]);
-                const flags = (new Some(headers[(Header.Flags).toLowerCase()])).flatMap(stringToIntOption).getOrElse(0);
-                var id = new TraceId({
-                  traceId: traceId,
-                  parentId: parentSpanId,
-                  spanId: spanId,
-                  sampled: sampled.map(stringToBoolean),
-                  flags
-                });
-                tracer.setId(id);
-                probeData.traceId = tracer.id;
-              };
-            } else {
-              tracer.setId(tracer.createRootId());
-              probeData.traceId = tracer.id;
-              // Must assign new options back to args[0]
-              const { headers } = Request.addZipkinHeaders(args[0], tracer.id);
-              Object.assign(args[0].headers, headers);
-            }
+            const parentSpanContext = tracer.extract(openTracing.FORMAT_HTTP_HEADERS,
+                                                     httpReq.headers);
 
-            tracer.recordServiceName(serviceName);
-            tracer.recordRpc(method.toUpperCase());
-            tracer.recordBinary('http.url', httpReq.headers.host + traceUrl);
-            tracer.recordAnnotation(new Annotation.ServerRecv());
-            tracer.recordAnnotation(new Annotation.LocalAddr(0));
+            const span = tracer.startSpan('Inbound http:' + traceUrl, {
+              childOf: parentSpanContext
+            });
+            // set any additional info (ex server address/port
+            tracer.namespace.set('span', span);
 
             aspect.after(res, 'end', probeData, function(obj, methodName, args, probeData, ret) {
-              tracer.recordBinary('http.status_code', res.statusCode.toString());
-              tracer.recordAnnotation(new Annotation.ServerSend());
+              // set res.statusCode.toString() as 'http.status_code';
+              span.finish();
             });
           }
-        });
-      });
+        }, undefined, tracer.namespace);
+      }, undefined, tracer.namespace);
   }
   return target;
 };

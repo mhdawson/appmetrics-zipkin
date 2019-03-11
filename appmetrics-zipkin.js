@@ -23,12 +23,8 @@ var PropertyReader = require('properties-reader');
 var properties = PropertyReader(__dirname + '/appmetrics-zipkin.properties');
 var tcpp = require('tcp-ping');
 
-const {
-  BatchRecorder
-} = require('zipkin');
-const {
-  HttpLogger
-} = require('zipkin-transport-http');
+const cls = require('continuation-local-storage');
+const initJaegerTracer = require('jaeger-client').initTracer;
 
 // Load module probes into probes array by searching the probes directory.
 var probes = [];
@@ -36,6 +32,21 @@ var probes = [];
 var dirPath = path.join(__dirname, 'probes');
 var files = fs.readdirSync(dirPath);
 var processName = '';
+
+// setup the jaeger tracer
+function initTracer(serviceName) {
+  const config = {
+    serviceName: serviceName,
+    sampler: {
+      type: "const",
+      param: 1,
+    },
+    reporter: {
+      logSpans: true,
+    },
+  };
+  return initJaegerTracer(config);
+};
 
 module.exports = function(options) {
   options = options;
@@ -102,12 +113,9 @@ function start(options) {
     }
   });
 
-  const zipkinUrl = `http://${host}:${port}`;
-  const recorder = new BatchRecorder({
-    logger: new HttpLogger({
-      endpoint: `${zipkinUrl}/api/v1/spans`
-    })
-  });
+  const recorder = initTracer("http context propagation");
+  recorder.namespace = cls.createNamespace('http');
+  console.log('Initialized tracer');
 
   // Configure and start the probes
   probes.forEach(function(probe) {

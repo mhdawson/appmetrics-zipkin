@@ -19,17 +19,10 @@ var aspect = require('../lib/aspect.js');
 var util = require('util');
 var url = require('url');
 var semver = require('semver');
-const zipkin = require('zipkin');
+const cls = require('continuation-local-storage');
+const openTracing = require('opentracing');
 
 var serviceName;
-
-const {
-  Request,
-  Annotation
-} = require('zipkin');
-
-const CLSContext = require('zipkin-context-cls');
-const ctxImpl = new CLSContext();
 
 var methods;
 // In Node.js < v8.0.0 'get' calls 'request' so we only instrument 'request'
@@ -47,12 +40,7 @@ function HttpOutboundProbeZipkin() {
 util.inherits(HttpOutboundProbeZipkin, Probe);
 
 HttpOutboundProbeZipkin.prototype.attach = function(name, target) {
-  const tracer = new zipkin.Tracer({
-    ctxImpl,
-    recorder: this.recorder,
-    sampler: new zipkin.sampler.CountingSampler(this.config.sampleRate), // sample rate 0.01 will sample 1 % of all incoming requests
-    traceId128Bit: true // to generate 128-bit trace IDs.
-  });
+  const tracer = this.recorder;
   serviceName = this.serviceName;
   if (name === 'http') {
     if (target.__zipkinOutboundProbeAttached__) return target;
@@ -83,21 +71,24 @@ HttpOutboundProbeZipkin.prototype.attach = function(name, target) {
           methodArgs[0] = Object.assign({}, parsedOptions);
         }
 
-        if (!methodArgs[0].headers) methodArgs[0].headers = {};
-        let { headers } = Request.addZipkinHeaders(methodArgs[0], tracer.createChildId());
-        Object.assign(methodArgs[0].headers, { headers });
+        const parentSpan = cls.getNamespace('http').get('span');
+        const span = tracer.startSpan('outbound http:' + urlRequested, {
+          childOf: parentSpan.context()
+        });
+        // add additional info ex requestMethod
 
-        tracer.recordServiceName(serviceName);
-        tracer.recordRpc(requestMethod);
-        tracer.recordBinary('http.url', urlRequested);
-        tracer.recordAnnotation(new Annotation.ClientSend());
+        const traceHeaders = {}
+	if (!methodArgs[0].headers) methodArgs[0].headers = {};
+        tracer.inject(span.context(), openTracing.FORMAT_HTTP_HEADERS, traceHeaders);
+        Object.assign(methodArgs[0].headers, traceHeaders);
+        
         // End metrics
         aspect.aroundCallback(
           methodArgs,
           probeData,
           function(target, args, probeData) {
-            tracer.recordBinary('http.status_code', target.res.statusCode.toString());
-            tracer.recordAnnotation(new Annotation.ClientRecv());
+            // add target.res.statusCode.toString() as 'http.status_code'
+            span.finish();
           },
           function(target, args, probeData, ret) {
             return ret;
