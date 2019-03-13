@@ -19,7 +19,7 @@ var aspect = require('../lib/aspect.js');
 var util = require('util');
 var url = require('url');
 var semver = require('semver');
-const cls = require('continuation-local-storage');
+const { AsyncContext } = require('async_hooks');
 const openTracing = require('opentracing');
 
 var serviceName;
@@ -71,7 +71,8 @@ HttpOutboundProbeZipkin.prototype.attach = function(name, target) {
           methodArgs[0] = Object.assign({}, parsedOptions);
         }
 
-        const parentSpan = cls.getNamespace('http').get('span');
+//        const parentSpan = cls.getNamespace('http').get('span');
+        const parentSpan =  tracer.namespace.getStore().get('span');
         const span = tracer.startSpan('outbound http:' + urlRequested, {
           childOf: parentSpan.context()
         });

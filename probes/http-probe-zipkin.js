@@ -19,7 +19,7 @@ var Probe = require('../lib/probe.js');
 var aspect = require('../lib/aspect.js');
 var util = require('util');
 
-const cls = require('continuation-local-storage');
+//const { AsyncContext } = require('async_hooks');
 const openTracing = require('opentracing');
 
 var serviceName;
@@ -62,7 +62,8 @@ HttpProbeZipkin.prototype.attach = function(name, target) {
               childOf: parentSpanContext
             });
             // set any additional info (ex server address/port
-            tracer.namespace.set('span', span);
+            const store = tracer.namespace.enter();
+            store.set('span', span);
 
             aspect.after(res, 'end', probeData, function(obj, methodName, args, probeData, ret) {
               // set res.statusCode.toString() as 'http.status_code';

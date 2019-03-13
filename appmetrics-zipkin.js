@@ -23,7 +23,7 @@ var PropertyReader = require('properties-reader');
 var properties = PropertyReader(__dirname + '/appmetrics-zipkin.properties');
 var tcpp = require('tcp-ping');
 
-const cls = require('continuation-local-storage');
+const { AsyncContext } = require('async_hooks');
 const initJaegerTracer = require('jaeger-client').initTracer;
 
 // Load module probes into probes array by searching the probes directory.
@@ -114,7 +114,7 @@ function start(options) {
   });
 
   const recorder = initTracer("http context propagation");
-  recorder.namespace = cls.createNamespace('http');
+  recorder.namespace = new AsyncContext();
   console.log('Initialized tracer');
 
   // Configure and start the probes
